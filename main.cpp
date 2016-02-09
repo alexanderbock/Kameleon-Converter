@@ -186,7 +186,7 @@ void printFileInformation(const std::string& file) {
     // Variables
     int nVariables = kameleon->getNumberOfVariables();
     LINFOC("Number of Variables", nVariables);
-    LINFOC("Variables", "Name (native unit (SI unit) [min-max]");
+    LINFOC("Variables", "Name (native unit (SI unit) [min-max #nValues]");
     for (int i = 0; i < nVariables; ++i) {
         const std::string variableName = kameleon->getVariableName(i);
         const std::string siUnit = kameleon->getSIUnit(variableName);
@@ -198,12 +198,14 @@ void printFileInformation(const std::string& file) {
         LINFOC(
             fmt::format("Variable {}", i),
             fmt::format(
-                "{} ({}) ({}) [{}-{}]",
+                "{} ({}) ({}) [{}-{} #{}]",
                 variableName,
                 nativeUnit,
                 siUnit,
                 *minMax.first,
-                *minMax.second)
+                *minMax.second,
+                values->size()
+            )
         );
 
         delete values;
@@ -304,7 +306,7 @@ void extractVolume(const std::string& file, const std::string& variable) {
     int zDimension = zAxisValues->size();
     int nValues = xDimension * yDimension * zDimension;
 
-    LINFO("File Conversion", "Converting values");
+    LINFOC("File Conversion", "Converting values");
     std::vector<float> values(nValues);
     for (int x = 0; x < xAxisValues->size(); ++x) {
         for (int y = 0; y < yAxisValues->size(); ++y) {
@@ -315,12 +317,14 @@ void extractVolume(const std::string& file, const std::string& variable) {
                 int yPosition = yAxisValues->at(y);
                 int zPosition = zAxisValues->at(z);
 
-                values[index] = interpolator->interpolate(
+                float value = interpolator->interpolate(
                     variable,
                     xPosition,
                     yPosition,
                     zPosition
                 );
+
+                values[index] = value;
             }
         }
     }
@@ -336,7 +340,7 @@ void extractVolume(const std::string& file, const std::string& variable) {
     std::ofstream datOutput(outputDatFilename);
     datOutput << "RawFile: " << outputRawFilename << std::endl <<
     "Resolution: " << xDimension << " " << yDimension << " " << zDimension << std::endl <<
-    "Format: FLOAT" << std::endl;
+    "Format: FLOAT32" << std::endl;
 
     delete interpolator;
 }

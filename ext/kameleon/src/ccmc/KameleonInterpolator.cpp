@@ -78,7 +78,7 @@ namespace ccmc
 				return missingValue;
 				//cerr << "***Derived::interpolate: Interpolate returned the missing value for variable " << variable_string << endl;
 			}
-			interp_value *= this->getConversionFactorToVis(variable);
+			//interp_value *= this->getConversionFactorToVis(variable);
 
 		}
 
