@@ -42,6 +42,7 @@
 
 #include <algorithm>
 #include <format.h>
+#include <fstream>
 #include <string>
 
 enum class CoordinateSystem {
@@ -89,19 +90,14 @@ void deinitialize() {
     ghoul::deinitialize();
 }
 
-// Parses the commandline arguments and returns the file to be read
-std::string parseCommandlineArguments(int argc, char** argv) {
-    const std::string _loggerCat = "Commandline Arguments";
-    if (argc != 2) {
-        throw RuntimeError(
-            "Application must be started point to a CDF file or a configuration file",
-            "Commandline Arguments"
-        );
-    }
-    
-    std::string file = argv[1];
-    LINFOC("Commandline argument file", file);
-    return file;
+void displayHelp() {
+    LINFOC("Kameleon Converter", "The application can be used in one of two ways: "
+        "1: By providing a CDF file as the only argument, information about this CDF "
+        "file is printed to the console and stored in the 'information.txt' file."
+        "2: By providing a CDF file as the first argument and a variable name contained"
+        "in the file as the second argument, that variable will be extracted from the CDF"
+        "file"
+    );
 }
 
 // Returns true iff 'file' is a cdf file as determined by extension
@@ -150,6 +146,7 @@ CoordinateSystem detectNativeCoordinateSystem(ccmc::Kameleon* kameleon) {
 void printFileInformation(const std::string& file) {
     auto kameleon = initializeKameleon(file);
 
+    // Generic information
     LINFOC("Model Name", kameleon->getModelName());
     if (kameleon->doesAttributeExist("model_type")) {
         LINFOC(
@@ -164,6 +161,7 @@ void printFileInformation(const std::string& file) {
     LINFOC("Time", kameleon->getCurrentTime().toString());
     LINFOC("", "");
 
+    // Global attributes
     int nGlobalAttributes = kameleon->getNumberOfGlobalAttributes();
     LINFOC("Number of Global Attributes", nGlobalAttributes);
     for (int i = 0; i < nGlobalAttributes; ++i) {
@@ -174,6 +172,7 @@ void printFileInformation(const std::string& file) {
     }
     LINFOC("", "");
 
+    // Variable attributes
     int nVariableAttributes = kameleon->getNumberOfVariableAttributes();
     LINFOC("Number of Variable Attributes", nVariableAttributes);
     for (int i = 0; i < nVariableAttributes; ++i) {
@@ -184,6 +183,7 @@ void printFileInformation(const std::string& file) {
     }
     LINFOC("", "");
 
+    // Variables
     int nVariables = kameleon->getNumberOfVariables();
     LINFOC("Number of Variables", nVariables);
     LINFOC("Variables", "Name (native unit (SI unit) [min-max]");
@@ -205,9 +205,12 @@ void printFileInformation(const std::string& file) {
                 *minMax.first,
                 *minMax.second)
         );
+
+        delete values;
     }
     LINFOC("", "");
 
+    // Grids
     LINFOC(
         "Standard Grid System",
         kameleon->getGlobalAttribute("standard_grid_target").getAttributeString()
@@ -243,21 +246,126 @@ void printFileInformation(const std::string& file) {
             fmt::format("{} {}", gridInformation, dimensionInformation)
         );
     }
+}
 
+void extractVolume(const std::string& file, const std::string& variable) {
+    const std::string& outputRawFilename = fmt::format(
+        "{}_{}.raw", filesystem::File(file).baseName(), variable
+    );
+    const std::string& outputDatFilename = fmt::format(
+        "{}_{}.dat", filesystem::File(file).baseName(), variable
+    );
+    
+    LINFOC("File Conversion",
+        fmt::format("Creating files '{}' and '{}' from '{}' using variable '{}'",
+            outputRawFilename,
+            outputDatFilename,
+            file,
+            variable
+        )
+    );
+
+    auto kameleon = initializeKameleon(file);
+
+    if (!kameleon->doesVariableExist(variable)) {
+        throw RuntimeError(
+            fmt::format("CDF file '{}' does not contain variable '{}'", file, variable),
+            "File Conversion"
+        );
+    }
+
+    ccmc::Interpolator* interpolator = kameleon->createNewInterpolator();
+
+    CoordinateSystem coordinateSystem = detectNativeCoordinateSystem(kameleon.get());
+
+    std::string xAxis;
+    std::string yAxis;
+    std::string zAxis;
+    switch (coordinateSystem) {
+    case CoordinateSystem::Cartesian:
+        xAxis = "x";
+        yAxis = "y";
+        zAxis = "z";
+        break;
+    case CoordinateSystem::Spherical:
+        xAxis = "r";
+        yAxis = "theta";
+        zAxis = "phi";
+        break;
+    case CoordinateSystem::Unknown:
+        throw RuntimeError("Unknown coordinate system", "File Conversion");
+    }
+
+    std::vector<float>* xAxisValues = kameleon->getVariable(xAxis);
+    int xDimension = xAxisValues->size();
+    std::vector<float>* yAxisValues = kameleon->getVariable(yAxis);
+    int yDimension = yAxisValues->size();
+    std::vector<float>* zAxisValues = kameleon->getVariable(zAxis);
+    int zDimension = zAxisValues->size();
+    int nValues = xDimension * yDimension * zDimension;
+
+    LINFO("File Conversion", "Converting values");
+    std::vector<float> values(nValues);
+    for (int x = 0; x < xAxisValues->size(); ++x) {
+        for (int y = 0; y < yAxisValues->size(); ++y) {
+            for (int z = 0; z < zAxisValues->size(); ++z) {
+                // Linearize index
+                int index = z * xDimension * yDimension + y * xDimension + x;
+                int xPosition = xAxisValues->at(x);
+                int yPosition = yAxisValues->at(y);
+                int zPosition = zAxisValues->at(z);
+
+                values[index] = interpolator->interpolate(
+                    variable,
+                    xPosition,
+                    yPosition,
+                    zPosition
+                );
+            }
+        }
+    }
+
+    LINFOC("File Conversion", "Saving file '" << outputRawFilename << "'");
+    std::ofstream rawOutput(outputRawFilename, std::ios_base::binary);
+    rawOutput.write(
+        reinterpret_cast<const char*>(values.data()),
+        values.size() * sizeof(float)
+    );
+
+    LINFOC("File Conversion", "Saving file '" << outputDatFilename << "'");
+    std::ofstream datOutput(outputDatFilename);
+    datOutput << "RawFile: " << outputRawFilename << std::endl <<
+    "Resolution: " << xDimension << " " << yDimension << " " << zDimension << std::endl <<
+    "Format: FLOAT" << std::endl;
+
+    delete interpolator;
 }
 
 int main(int argc, char** argv) {
     try {
         ::initialize();
 
-        std::string file = parseCommandlineArguments(argc, argv);
-        if (isCDFFile)
-            printFileInformation(file);
-        else {
+        if (argc == 1)
+            displayHelp();
 
-
+        if (argc == 2) {
+            // Only the a CDF file has been provided
+            std::string file = argv[1];
+            if (!isCDFFile)
+                throw RuntimeError("Application must be started point to a CDF file");
+            else
+                printFileInformation(file);
         }
 
+        if (argc == 3) {
+            std::string file = argv[1];
+            std::string variable = argv[2];
+            if (!isCDFFile)
+                throw RuntimeError("Application must be started point to a CDF file");
+            else
+                extractVolume(file, variable);
+
+        }
 
         ::deinitialize();
         std::exit(EXIT_SUCCESS);
