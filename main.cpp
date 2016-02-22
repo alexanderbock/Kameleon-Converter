@@ -32,10 +32,12 @@
  \***************************************************************************************/
  
 #include <ghoul/ghoul.h>
+#include <ghoul/filesystem/file.h>
+#include <ghoul/filesystem/filesystem.h>
 #include <ghoul/logging/logmanager.h>
 #include <ghoul/logging/consolelog.h>
 #include <ghoul/logging/textlog.h>
-#include <ghoul/filesystem/file.h>
+#include <ghoul/lua/ghoul_lua.h>
 #include <ghoul/misc/exception.h>
 #include <ccmc/Attribute.h>
 #include <ccmc/Kameleon.h>
@@ -44,6 +46,11 @@
 #include <format.h>
 #include <fstream>
 #include <string>
+
+namespace {
+    const std::string KeyUseNormalization = "UseNormalization";
+    bool UseNormalization = false;
+}
 
 enum class CoordinateSystem {
     Cartesian,
@@ -98,6 +105,18 @@ void displayHelp() {
         "in the file as the second argument, that variable will be extracted from the CDF"
         "file"
     );
+}
+
+void loadConfiguration(const std::string& file) {
+    if (FileSys.fileExists(file)) {
+        ghoul::Dictionary settings;
+        ghoul::lua::loadDictionaryFromFile(file, settings);
+
+        if (settings.hasKeyAndValue<bool>(KeyUseNormalization)) {
+            UseNormalization = settings.value<bool>(KeyUseNormalization);
+            LINFOC("Configuration", "Setting Normalization to " << UseNormalization);
+        }
+    }
 }
 
 // Returns true iff 'file' is a cdf file as determined by extension
@@ -276,7 +295,8 @@ void extractVolume(const std::string& file, const std::string& variable) {
         );
     }
 
-    ccmc::Interpolator* interpolator = kameleon->createNewInterpolator();
+    ccmc::Interpolator* interpolator = kameleon->model->createNewInterpolator();
+    //ccmc::Interpolator* interpolator = kameleon->createNewInterpolator();
 
     CoordinateSystem coordinateSystem = detectNativeCoordinateSystem(kameleon.get());
 
@@ -306,6 +326,7 @@ void extractVolume(const std::string& file, const std::string& variable) {
     int zDimension = zAxisValues->size();
     int nValues = xDimension * yDimension * zDimension;
 
+
     LINFOC("File Conversion", "Converting values");
     std::vector<float> values(nValues);
     for (int x = 0; x < xAxisValues->size(); ++x) {
@@ -313,9 +334,9 @@ void extractVolume(const std::string& file, const std::string& variable) {
             for (int z = 0; z < zAxisValues->size(); ++z) {
                 // Linearize index
                 int index = z * xDimension * yDimension + y * xDimension + x;
-                int xPosition = xAxisValues->at(x);
-                int yPosition = yAxisValues->at(y);
-                int zPosition = zAxisValues->at(z);
+                float xPosition = xAxisValues->at(x);
+                float yPosition = yAxisValues->at(y);
+                float zPosition = zAxisValues->at(z);
 
                 float value = interpolator->interpolate(
                     variable,
@@ -329,6 +350,14 @@ void extractVolume(const std::string& file, const std::string& variable) {
         }
     }
 
+    if (UseNormalization) {
+        std::vector<float>* allValues = kameleon->getVariable(variable);
+        auto minMax = std::minmax_element(allValues->begin(), allValues->end());
+
+        for (int i = 0; i < values.size(); ++i)
+            values[i] = (values[i] - *minMax.first) / (*minMax.second - *minMax.first);
+    }
+
     LINFOC("File Conversion", "Saving file '" << outputRawFilename << "'");
     std::ofstream rawOutput(outputRawFilename, std::ios_base::binary);
     rawOutput.write(
@@ -340,14 +369,19 @@ void extractVolume(const std::string& file, const std::string& variable) {
     std::ofstream datOutput(outputDatFilename);
     datOutput << "RawFile: " << outputRawFilename << std::endl <<
     "Resolution: " << xDimension << " " << yDimension << " " << zDimension << std::endl <<
-    "Format: FLOAT32" << std::endl;
+    "Format: FLOAT32" << std::endl <<
+    "DataRange: " << *minMax.first << " " << *minMax.second;
 
     delete interpolator;
 }
 
 int main(int argc, char** argv) {
+    const std::string ConfigurationFile = "config.cfg";
+
     try {
         ::initialize();
+
+        loadConfiguration(ConfigurationFile);
 
         if (argc == 1)
             displayHelp();
@@ -355,20 +389,21 @@ int main(int argc, char** argv) {
         if (argc == 2) {
             // Only the a CDF file has been provided
             std::string file = argv[1];
-            if (!isCDFFile)
+            if (!isCDFFile(file))
                 throw RuntimeError("Application must be started point to a CDF file");
             else
                 printFileInformation(file);
         }
 
-        if (argc == 3) {
+        if (argc >= 3) {
             std::string file = argv[1];
-            std::string variable = argv[2];
-            if (!isCDFFile)
+            if (!isCDFFile(file))
                 throw RuntimeError("Application must be started point to a CDF file");
-            else
-                extractVolume(file, variable);
 
+            for (int i = 2; i < argc; ++i) {
+                std::string variable = argv[i];
+                extractVolume(file, variable);
+            }
         }
 
         ::deinitialize();
