@@ -338,6 +338,11 @@ void extractVolume(const std::string& file, const std::string& variable) {
                 float yPosition = yAxisValues->at(y);
                 float zPosition = zAxisValues->at(z);
 
+                if (coordinateSystem == CoordinateSystem::Spherical) {
+                    yPosition = glm::degrees(yPosition);
+                    zPosition = glm::degrees(zPosition);
+                }
+
                 float value = interpolator->interpolate(
                     variable,
                     xPosition,
@@ -350,10 +355,9 @@ void extractVolume(const std::string& file, const std::string& variable) {
         }
     }
 
+    std::vector<float>* allValues = kameleon->getVariable(variable);
+    auto minMax = std::minmax_element(allValues->begin(), allValues->end());
     if (UseNormalization) {
-        std::vector<float>* allValues = kameleon->getVariable(variable);
-        auto minMax = std::minmax_element(allValues->begin(), allValues->end());
-
         for (int i = 0; i < values.size(); ++i)
             values[i] = (values[i] - *minMax.first) / (*minMax.second - *minMax.first);
     }
