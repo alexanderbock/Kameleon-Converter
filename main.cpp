@@ -339,7 +339,7 @@ void extractVolume(const std::string& file, const std::string& variable) {
                 float zPosition = zAxisValues->at(z);
 
                 if (coordinateSystem == CoordinateSystem::Spherical) {
-                    yPosition = glm::degrees(yPosition);
+                    yPosition = (glm::degrees(yPosition)-90) * -1;
                     zPosition = glm::degrees(zPosition);
                 }
 
