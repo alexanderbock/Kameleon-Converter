@@ -211,7 +211,7 @@ namespace ccmc
 		else
 		{
 			//std::cerr << "grid: " << ccmc::strings::variables::theta_ << std::endl;
-			return ccmc::strings::variables::theta_;
+			return ccmc::strings::variables::phi_;
 		}
 	}
 

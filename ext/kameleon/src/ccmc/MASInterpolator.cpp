@@ -197,7 +197,7 @@ namespace ccmc
 #endif
 
 		float value;
-		if ((ir < 0) || (ir >= nr - 1) || (ilat < 0) || (ilat >= nlat - 1))
+		if ((ir < 0) || (ir >= nr - 1) || (ilat < 0) || (ilat >= nlat - 1) || (ilon < 0) || (ilon >= nlon - 1))
 		{
 			value = missingValue;
 //			std::cerr << "returning missing value" << std::endl;
