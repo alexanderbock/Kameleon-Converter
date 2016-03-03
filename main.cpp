@@ -289,7 +289,7 @@ void printFileInformation(const std::string& file) {
 std::pair<std::string, std::string> generateFilenames(
     const std::string& file, const std::string& variable)
 {
-    std::string base = fmt::format("{}_{}.", filesystem::File(file).baseName(), variable);
+    std::string base = fmt::format("{}_{}", filesystem::File(file).baseName(), variable);
     return std::make_pair(
         base + ".raw",
         base + ".dat"
