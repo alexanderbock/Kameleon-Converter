@@ -45,12 +45,29 @@
 #include <algorithm>
 #include <format.h>
 #include <fstream>
+#include <map>
 #include <string>
+
+#define _USE_MATH_DEFINES
+#include <math.h>
 
 namespace {
     const std::string KeyUseNormalization = "UseNormalization";
     bool UseNormalization = false;
 }
+
+enum class Command {
+    Unknown, // This has to be the first so that the std::map selects this if the command was not found
+    Native,
+    Convert,
+    Info
+};
+
+std::map<std::string, Command> Commands = {
+    { "native", Command::Native },
+    { "convert", Command::Convert },
+    { "info", Command::Info }
+};
 
 enum class CoordinateSystem {
     Cartesian,
@@ -269,13 +286,125 @@ void printFileInformation(const std::string& file) {
     }
 }
 
+std::pair<std::string, std::string> generateFilenames(
+    const std::string& file, const std::string& variable)
+{
+    std::string base = fmt::format("{}_{}.", filesystem::File(file).baseName(), variable);
+    return std::make_pair(
+        base + ".raw",
+        base + ".dat"
+    );
+}
+
+void convertVolume(const std::string& file, int resolution, const std::string& variable) {
+    auto files = generateFilenames(file, variable);
+    const std::string& outputRawFilename = files.first;
+    const std::string& outputDatFilename = files.second;
+
+    LINFOC("File Conversion",
+        fmt::format("Creating files '{}' and '{}' from '{}' using variable '{}'",
+            outputRawFilename,
+            outputDatFilename,
+            file,
+            variable
+            )
+        );
+
+    auto kameleon = initializeKameleon(file);
+
+    if (!kameleon->doesVariableExist(variable)) {
+        throw RuntimeError(
+            fmt::format("CDF file '{}' does not contain variable '{}'", file, variable),
+            "File Conversion"
+            );
+    }
+
+    ccmc::Interpolator* interpolator = kameleon->createNewInterpolator();
+    //ccmc::Interpolator* interpolator = kameleon->model->createNewInterpolator();
+
+    CoordinateSystem coordinateSystem = detectNativeCoordinateSystem(kameleon.get());
+
+    if (coordinateSystem == CoordinateSystem::Spherical) {
+        // Using a Cartesian coordinate system
+
+        // Find the minimum/maximum values of the radius
+        float rMin = kameleon->getVariableAttribute("r", "actual_min").getAttributeFloat();
+        float rMax = kameleon->getVariableAttribute("r", "actual_max").getAttributeFloat();
+        float phiMin = kameleon->getVariableAttribute("phi", "actual_min").getAttributeFloat();
+        float phiMax = kameleon->getVariableAttribute("phi", "actual_max").getAttributeFloat();
+        float thetaMin = kameleon->getVariableAttribute("theta", "actual_min").getAttributeFloat();
+        float thetaMax = kameleon->getVariableAttribute("theta", "actual_max").getAttributeFloat();
+
+        LINFOC("File Conversion", "Converting values");
+        std::vector<float> values(resolution * resolution * resolution);
+        for (int x = 0; x < resolution; ++x) {
+            for (int y = 0; y < resolution; ++y) {
+                for (int z = 0; z < resolution; ++z) {
+                    glm::vec3 voxelPos = glm::vec3(
+                        static_cast<float>(x) / static_cast<float>(resolution - 1),
+                        static_cast<float>(y) / static_cast<float>(resolution - 1),
+                        static_cast<float>(z) / static_cast<float>(resolution - 1)
+                    );
+
+                    glm::vec3 pos = rMax * (2.f * voxelPos - 1.f);
+
+                    float r = glm::length(pos);
+                    float theta = acos(pos.z / r);
+                    float phi = atan2(pos.y, pos.x);
+                    if (phi < 0)
+                        phi += M_PI * 2.f;
+
+                    float value = 0.f;
+                    if (r >= rMin && r <= rMax && 
+                        theta >= thetaMin && theta <= thetaMax /*&& 
+                        phi >= phiMin && phi <= phiMax*/)
+                    {
+                        r = r / ccmc::constants::AU_in_meters;
+                        theta = (glm::degrees(theta) - 90) * -1;
+                        phi = glm::degrees(phi);
+                        value = interpolator->interpolate(variable, r, theta, phi);
+                    }
+
+                    int index = z * resolution * resolution + y * resolution + x;
+                    values[index] = value;
+                }
+            }
+        }
+
+        std::vector<float>* allValues = kameleon->getVariable(variable);
+        auto minMax = std::minmax_element(allValues->begin(), allValues->end());
+        if (UseNormalization) {
+            for (int i = 0; i < values.size(); ++i)
+                values[i] = (values[i] - *minMax.first) / (*minMax.second - *minMax.first);
+        }
+
+        LINFOC("File Conversion", "Saving file '" << outputRawFilename << "'");
+        std::ofstream rawOutput(outputRawFilename, std::ios_base::binary);
+        rawOutput.write(
+            reinterpret_cast<const char*>(values.data()),
+            values.size() * sizeof(float)
+            );
+
+        LINFOC("File Conversion", "Saving file '" << outputDatFilename << "'");
+        std::ofstream datOutput(outputDatFilename);
+        datOutput << "RawFile: " << outputRawFilename << std::endl <<
+            "Resolution: " << resolution << " " << resolution << " " << resolution << std::endl <<
+            "Format: FLOAT32" << std::endl <<
+            "DataRange: " << *minMax.first << " " << *minMax.second;
+
+        delete interpolator;
+
+    }
+    else {
+        throw RuntimeError("This function has not been implemented", "File Conversion");
+    }
+
+}
+
 void extractVolume(const std::string& file, const std::string& variable) {
-    const std::string& outputRawFilename = fmt::format(
-        "{}_{}.raw", filesystem::File(file).baseName(), variable
-    );
-    const std::string& outputDatFilename = fmt::format(
-        "{}_{}.dat", filesystem::File(file).baseName(), variable
-    );
+    auto files = generateFilenames(file, variable);
+    const std::string& outputRawFilename = files.first;
+    const std::string& outputDatFilename = files.second;
     
     LINFOC("File Conversion",
         fmt::format("Creating files '{}' and '{}' from '{}' using variable '{}'",
@@ -389,24 +518,39 @@ int main(int argc, char** argv) {
 
         if (argc == 1)
             displayHelp();
-
-        if (argc == 2) {
-            // Only the a CDF file has been provided
-            std::string file = argv[1];
+        else {
+            std::string c = argv[1];
+            std::string file = argv[2];
             if (!isCDFFile(file))
-                throw RuntimeError("Application must be started point to a CDF file");
-            else
-                printFileInformation(file);
-        }
+                throw RuntimeError("Application must be pointed to a CDF file");
 
-        if (argc >= 3) {
-            std::string file = argv[1];
-            if (!isCDFFile(file))
-                throw RuntimeError("Application must be started point to a CDF file");
+            Command command = Commands[c];
 
-            for (int i = 2; i < argc; ++i) {
-                std::string variable = argv[i];
-                extractVolume(file, variable);
+            switch (command) {
+                case Command::Convert:
+                {
+                    std::string resolution = argv[3];
+
+                    for (int i = 4; i < argc; ++i) {
+                        std::string variable = argv[i];
+                        convertVolume(file, atoi(resolution.c_str()), variable);
+                    }
+                    break;
+                }
+                case Command::Info:
+                {
+                    printFileInformation(file);
+                    break;
+                }
+                case Command::Native:
+                    for (int i = 3; i < argc; ++i) {
+                        std::string variable = argv[i];
+                        extractVolume(file, variable);
+                    }
+                    break;
+                case Command::Unknown:
+                    displayHelp();
+                    break;
             }
         }
 
